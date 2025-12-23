@@ -1,0 +1,5 @@
+{
+  "name": "slattery/markdownify_viewmodes",
+  "description": "Granular control over view modes for entity rendering through the Markdownify converter",
+  "type": "drupal-custom-module"
+}
