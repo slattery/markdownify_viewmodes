@@ -1,0 +1,8 @@
+services:
+  markdownify_viewmodes.view_mode_resolver:
+    class: Drupal\markdownify_viewmodes\Service\ViewModeResolver
+    arguments:
+      - '@config.factory'
+      - '@entity_type.manager'
+      - '@entity_display.repository'
+      - '@logger.factory'

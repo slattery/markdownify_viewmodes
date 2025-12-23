@@ -1,0 +1,37 @@
+# Schema for third-party settings on markdownify.settings
+markdownify.settings.third_party.markdownify_viewmodes:
+  type: mapping
+  label: 'Markdownify View Modes settings'
+  mapping:
+    entity_types:
+      type: mapping
+      label: 'Per-entity-type view mode defaults'
+      mapping_allowed: true
+      mapping:
+        view_mode:
+          type: string
+          label: 'Default view mode for this entity type'
+
+# Schema for third-party settings on node types
+node.type.*.third_party.markdownify_viewmodes:
+  type: mapping
+  label: 'Markdownify View Modes node type settings'
+  mapping:
+    enable_override:
+      type: boolean
+      label: 'Whether to override the entity-type default'
+    view_mode:
+      type: string
+      label: 'View mode override for this node type'
+
+# Schema for third-party settings on taxonomy vocabularies
+taxonomy.vocabulary.*.third_party.markdownify_viewmodes:
+  type: mapping
+  label: 'Markdownify View Modes vocabulary settings'
+  mapping:
+    enable_override:
+      type: boolean
+      label: 'Whether to override the entity-type default'
+    view_mode:
+      type: string
+      label: 'View mode override for this vocabulary'

@@ -1,0 +1,8 @@
+name: 'Markdownify View Modes'
+description: 'Allows configuration of view modes for Markdownify rendering at global and per-bundle levels.'
+package: AI
+type: module
+core_version_requirement: ^10 || ^11
+
+dependencies:
+  - markdownify:markdownify

@@ -1,0 +1,242 @@
+<?php
+
+/**
+ * @file
+ * Main module file for Markdownify View Modes.
+ */
+
+declare(strict_types=1);
+
+use Drupal\Core\Form\FormStateInterface;
+use Drupal\Core\Render\BubbleableMetadata;
+use Drupal\node\NodeTypeInterface;
+use Drupal\taxonomy\VocabularyInterface;
+
+/**
+ * Implements hook_markdownify_entity_build_alter().
+ *
+ * Rebuilds the entity with the configured view mode if different from current.
+ */
+function markdownify_viewmodes_markdownify_entity_build_alter(array &$build, array $context, ?BubbleableMetadata $metadata): void {
+  $entity = $context['entity'];
+
+  // Get the configured view mode via service.
+  $view_mode_resolver = \Drupal::service('markdownify_viewmodes.view_mode_resolver');
+  $configured_view_mode = $view_mode_resolver->getViewMode($entity);
+
+  // Only rebuild if the configured view mode differs from the current one.
+  if ($configured_view_mode !== $context['view_mode']) {
+    $view_builder = \Drupal::entityTypeManager()->getViewBuilder($entity->getEntityTypeId());
+
+    // Rebuild the entity with the configured view mode.
+    $new_build = $view_builder->view($entity, $configured_view_mode, $context['langcode']);
+    $build = $new_build;
+
+    // Update metadata for cache invalidation.
+    if ($metadata) {
+      $cacheability = BubbleableMetadata::createFromRenderArray($new_build);
+      $metadata->merge($cacheability);
+
+      // Add config dependency for cache invalidation.
+      $metadata->addCacheableDependency(\Drupal::config('markdownify.settings'));
+
+      // Add bundle entity cache dependency.
+      $bundle_entity_type = $entity->getEntityType()->getBundleEntityType();
+      if ($bundle_entity_type !== NULL) {
+        try {
+          $bundle_entity = \Drupal::entityTypeManager()
+            ->getStorage($bundle_entity_type)
+            ->load($entity->bundle());
+          if ($bundle_entity) {
+            $metadata->addCacheableDependency($bundle_entity);
+          }
+        }
+        catch (\Exception $e) {
+          // Silently fail if bundle entity can't be loaded.
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_form_markdownify_settings_alter().
+ *
+ * Adds per-entity-type view mode defaults to the markdownify settings form.
+ * Integrates into the AJAX structure by adding fields inside entity type sections.
+ */
+function markdownify_viewmodes_form_markdownify_settings_alter(&$form, FormStateInterface $form_state, $form_id): void {
+  $config = \Drupal::config('markdownify.settings');
+  $entity_display_repository = \Drupal::service('entity_display.repository');
+
+  // Get configured entity types from config.
+  $supported_entities = $config->get('supported_entities') ?? [];
+
+  // For each configured entity type, add view mode selector inside its section.
+  foreach (array_keys($supported_entities) as $entity_type_id) {
+    if (isset($form['entities_configs']['supported_entities'][$entity_type_id])) {
+      // Get view mode options for this entity type.
+      // getViewModeOptions() returns a simple id => label array ready for form elements.
+      $view_modes = $entity_display_repository->getViewModeOptions($entity_type_id);
+
+      // Add view mode field INSIDE the existing entity type container.
+      // This integrates with the AJAX structure automatically.
+      $form['entities_configs']['supported_entities'][$entity_type_id]['default_view_mode'] = [
+        '#type' => 'select',
+        '#title' => t('Default view mode'),
+        '#description' => t('The view mode to use when rendering @type entities via Markdownify.', ['@type' => $entity_type_id]),
+        '#options' => $view_modes,
+        '#default_value' => $config->get("third_party_settings.markdownify_viewmodes.entity_types.{$entity_type_id}") ?? 'full',
+        '#empty_option' => t('- Use full -'),
+      ];
+    }
+  }
+
+  // Add submit handler to save per-entity-type view mode defaults.
+  // Note: ConfigFormBase doesn't use entity builders, only submit handlers.
+  $form['#submit'][] = 'markdownify_viewmodes_markdownify_settings_submit';
+}
+
+/**
+ * Submit handler for markdownify settings form.
+ *
+ * Saves per-entity-type view mode defaults to markdownify config as third-party settings.
+ * This handler runs before the base form's submitForm() to ensure values are set correctly.
+ */
+function markdownify_viewmodes_markdownify_settings_submit(array &$form, FormStateInterface $form_state): void {
+  // Get the markdownify config object.
+  $config = \Drupal::service('config.factory')->getEditable('markdownify.settings');
+
+  // Get supported entities from form state.
+  $supported_entities = $form_state->getValue(['entities_configs', 'supported_entities']) ?? [];
+
+  // Initialize third-party settings if needed.
+  $third_party_settings = $config->get('third_party_settings') ?? [];
+  if (!isset($third_party_settings['markdownify_viewmodes'])) {
+    $third_party_settings['markdownify_viewmodes'] = [];
+  }
+  if (!isset($third_party_settings['markdownify_viewmodes']['entity_types'])) {
+    $third_party_settings['markdownify_viewmodes']['entity_types'] = [];
+  }
+
+  // For each entity type, save the default view mode as a third-party setting.
+  foreach ($supported_entities as $entity_type_id => $settings) {
+    if (isset($settings['default_view_mode']) && !empty($settings['default_view_mode'])) {
+      $third_party_settings['markdownify_viewmodes']['entity_types'][$entity_type_id] = $settings['default_view_mode'];
+    }
+  }
+
+  // Save the third-party settings back to config.
+  $config->set('third_party_settings', $third_party_settings);
+  // Save the config.
+  $config->save();
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter() for node_type_form.
+ *
+ * Adds bundle-specific view mode override to node type forms.
+ */
+function markdownify_viewmodes_form_node_type_form_alter(&$form, FormStateInterface $form_state, $form_id): void {
+  _markdownify_viewmodes_bundle_form_alter($form, $form_state, 'node');
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter() for taxonomy_vocabulary_form.
+ *
+ * Adds bundle-specific view mode override to taxonomy vocabulary forms.
+ */
+function markdownify_viewmodes_form_taxonomy_vocabulary_form_alter(&$form, FormStateInterface $form_state, $form_id): void {
+  _markdownify_viewmodes_bundle_form_alter($form, $form_state, 'taxonomy_term');
+}
+
+/**
+ * Helper function to alter bundle entity forms.
+ *
+ * @param array &$form
+ *   The form array.
+ * @param \Drupal\Core\Form\FormStateInterface $form_state
+ *   The form state.
+ * @param string $entity_type_id
+ *   The entity type ID.
+ */
+function _markdownify_viewmodes_bundle_form_alter(array &$form, FormStateInterface $form_state, string $entity_type_id): void {
+  $form_object = $form_state->getFormObject();
+  $entity = $form_object->getEntity();
+
+  // Get the bundle entity and current values.
+  $enable_override = $entity->getThirdPartySetting('markdownify_viewmodes', 'enable_override', FALSE);
+  $view_mode = $entity->getThirdPartySetting('markdownify_viewmodes', 'view_mode', 'full');
+
+  // Get available view modes for this entity type.
+  $entity_display_repository = \Drupal::service('entity_display.repository');
+  $view_modes = $entity_display_repository->getViewModeOptionsByBundle($entity_type_id, $entity->id());
+
+  // Only show the fieldset if markdownify supports this entity type.
+  $markdownify_config = \Drupal::config('markdownify.settings');
+  $supported_entities = $markdownify_config->get('supported_entities') ?? [];
+
+  if (!isset($supported_entities[$entity_type_id])) {
+    return;
+  }
+
+  // Create a vertical tab group for markdownify settings.
+  if (!isset($form['markdownify_settings'])) {
+    $form['markdownify_settings'] = [
+      '#type' => 'details',
+      '#title' => t('Markdownify'),
+      '#group' => 'additional_settings',
+    ];
+  }
+
+  // Add the override fieldset.
+  $form['markdownify_settings']['markdownify_view_mode_override'] = [
+    '#type' => 'checkbox',
+    '#title' => t('Override global view mode for Markdownify'),
+    '#description' => t('Enable to use a different view mode for this content type when rendering via Markdownify.'),
+    '#default_value' => $enable_override,
+  ];
+
+  $form['markdownify_settings']['markdownify_view_mode'] = [
+    '#type' => 'select',
+    '#title' => t('View mode'),
+    '#description' => t('The view mode to use for this content type in Markdownify.'),
+    '#options' => $view_modes,
+    '#default_value' => $view_mode,
+    '#states' => [
+      'visible' => [
+        ':input[name="markdownify_view_mode_override"]' => ['checked' => TRUE],
+      ],
+    ],
+  ];
+
+  // Register the entity builder to save the settings.
+  $form['#entity_builders'][] = 'markdownify_viewmodes_bundle_entity_builder';
+}
+
+/**
+ * Entity builder for bundle forms with third-party markdownify options.
+ *
+ * @param string $entity_type_id
+ *   The entity type ID.
+ * @param \Drupal\node\NodeTypeInterface|\Drupal\taxonomy\VocabularyInterface $entity
+ *   The bundle entity.
+ * @param array &$form
+ *   The form array.
+ * @param \Drupal\Core\Form\FormStateInterface $form_state
+ *   The form state.
+ */
+function markdownify_viewmodes_bundle_entity_builder($entity_type_id, $entity, &$form, FormStateInterface $form_state): void {
+  $enable_override = $form_state->getValue('markdownify_view_mode_override', FALSE);
+  $view_mode = $form_state->getValue('markdownify_view_mode', 'full');
+
+  if ($enable_override) {
+    $entity->setThirdPartySetting('markdownify_viewmodes', 'enable_override', TRUE);
+    $entity->setThirdPartySetting('markdownify_viewmodes', 'view_mode', $view_mode);
+  }
+  else {
+    // Remove the third-party settings if override is disabled.
+    $entity->unsetThirdPartySetting('markdownify_viewmodes', 'enable_override');
+    $entity->unsetThirdPartySetting('markdownify_viewmodes', 'view_mode');
+  }
+}
