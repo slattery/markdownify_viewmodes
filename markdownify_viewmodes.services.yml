@@ -6,3 +6,10 @@ services:
       - '@entity_type.manager'
       - '@entity_display.repository'
       - '@logger.factory'
+  markdownify_viewmodes.markdown_canonical_subscriber:
+    class: Drupal\markdownify_viewmodes\EventSubscriber\MarkdownCanonicalSubscriber
+    arguments: 
+      - '@path_alias.repository'
+      - '@language_manager'
+    tags:
+      - { name: event_subscriber }
